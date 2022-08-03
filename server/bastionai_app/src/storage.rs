@@ -56,7 +56,7 @@ impl Iterator for SizedObjectsBytes {
     }
 }
 
-struct TrainModule<'a> {
+pub struct TrainModule<'a> {
     c_module: &'a TrainableCModule,
     optimizer: Box<dyn Optimizer + 'a>,
     epochs: i32,
@@ -66,7 +66,7 @@ struct TrainModule<'a> {
     dataset_len: i64,
 }
 
-struct TrainModuleIter<'a> {
+pub struct TrainModuleIter<'a> {
     epochs: i32,
     pos: i32,
     loss: Tensor,
@@ -79,7 +79,7 @@ struct TrainModuleIter<'a> {
 }
 
 impl<'a> TrainModule<'a> {
-    fn new(
+    pub fn new(
         c_module: &'a TrainableCModule,
         optimizer: Box<dyn Optimizer + 'a>,
         epochs: i32,
@@ -96,7 +96,7 @@ impl<'a> TrainModule<'a> {
         }
     }
 
-    fn iter(&mut self) -> TrainModuleIter {
+    pub fn iter(&mut self) -> TrainModuleIter {
         TrainModuleIter {
             epochs: self.epochs,
             dataset_counter: self.dataset_counter,
@@ -167,7 +167,11 @@ impl Module {
             loss_type,
         ))
     }
-    pub fn train(&self, dataset: &Dataset, config: TrainConfig) -> Result<(), TchError> {
+    pub fn train<'a>(
+        &'a self,
+        dataset: &'a Dataset,
+        config: TrainConfig,
+    ) -> Result<Box<TrainModule>, TchError> {
         let optimizer = if config.private_learning {
             let parameters = self.private_parameters(1.0, 0.01, private_learning::LossType::Sum)?;
             Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer>
@@ -175,12 +179,9 @@ impl Module {
             let parameters = self.parameters()?;
             Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer>
         };
-        let mut trainer = TrainModule::new(&self.c_module, optimizer, config.epochs, dataset);
-        for (epoch, pos, loss) in trainer.iter() {
-            println!("{}, {}, {:?}", epoch, pos, loss);
-        }
+        let trainer = TrainModule::new(&self.c_module, optimizer, config.epochs, dataset);
 
-        Ok(())
+        Ok(Box::new(trainer))
     }
     pub fn test(&self, dataset: &Dataset, config: TestConfig) -> Result<f32, TchError> {
         let mut count = 0;

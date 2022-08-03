@@ -67,10 +67,12 @@ pub async fn stream_data(
 }
 
 pub fn serialize_tensor(tensor: &Tensor) -> Vec<u8> {
-    let capacity = tensor.numel() * tensor.f_kind().unwrap().elt_size_in_bytes();
-    let mut bytes = vec![0; capacity];
-    tensor.copy_data_u8(&mut bytes, tensor.numel());
-    bytes
+    let buf = Vec::new();
+    tensor.save_to_stream(buf.clone()).unwrap();
+    // let capacity = tensor.numel() * tensor.f_kind().unwrap().elt_size_in_bytes();
+    // let mut bytes = vec![0; capacity];
+    // tensor.copy_data_u8(&mut bytes, tensor.numel());
+    buf.clone()
 }
 
 pub fn parse_reference(reference: Reference) -> Result<Uuid, Status> {
