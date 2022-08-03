@@ -37,6 +37,7 @@ impl BastionAIServer {
 impl RemoteTorch for BastionAIServer {
     type FetchDatasetStream = ReceiverStream<Result<Chunk, Status>>;
     type FetchModuleStream = ReceiverStream<Result<Chunk, Status>>;
+    type TrainStream = ReceiverStream<Result<TrainingProgress, Status>>;
 
     async fn send_dataset(&self, request: Request<Streaming<Chunk>>) -> Result<Response<Reference>, Status> {
         let dataset: Artifact<Dataset> = tcherror_to_status((unstream_data(request.into_inner()).await?).deserialize())?;

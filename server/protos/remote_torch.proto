@@ -37,6 +37,12 @@ message Accuracy {
     float value = 1;
 }
 
+message TrainingProgress {
+    int32 epoch = 1;
+    int32 position = 2;
+    bytes loss = 3;
+}
+
 service RemoteTorch {
     rpc SendDataset (stream Chunk) returns (Reference) {}
     rpc SendModel (stream Chunk) returns (Reference) {}
@@ -46,6 +52,6 @@ service RemoteTorch {
     rpc DeleteModule (Reference) returns (Empty) {}
     rpc AvailableModels(Empty) returns (References) {}
     rpc AvailableDatasets(Empty) returns (References) {}
-    rpc Train (TrainConfig) returns (Empty) {}
+    rpc Train (TrainConfig) returns (stream TrainingProgress) {}
     rpc Test (TestConfig) returns (Accuracy) {}
 }

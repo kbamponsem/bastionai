@@ -1,13 +1,13 @@
-use crate::remote_torch::{TrainConfig, TestConfig};
+use crate::remote_torch::{TestConfig, TrainConfig};
 use crate::utils::*;
+use private_learning::{l2_loss, LossType, Optimizer, Parameters, PrivateParameters, SGD};
 use ring::hmac;
-use std::collections::{VecDeque, HashMap};
+use std::collections::{HashMap, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::io::Cursor;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tch::nn::VarStore;
-use tch::{CModule, Device, IValue, TchError, Tensor, TrainableCModule, IndexOp};
-use private_learning::{Parameters, PrivateParameters, LossType, SGD, Optimizer, l2_loss};
+use tch::{CModule, Device, IValue, IndexOp, TchError, Tensor, TrainableCModule};
 
 #[derive(Debug)]
 pub struct SizedObjectsBytes(Vec<u8>);
@@ -56,6 +56,90 @@ impl Iterator for SizedObjectsBytes {
     }
 }
 
+struct TrainModule<'a> {
+    c_module: &'a TrainableCModule,
+    optimizer: Box<dyn Optimizer + 'a>,
+    epochs: i32,
+    curr_epoch: i32,
+    dataset_counter: usize,
+    dataset: &'a Dataset,
+    dataset_len: i64,
+}
+
+struct TrainModuleIter<'a> {
+    epochs: i32,
+    pos: i32,
+    loss: Tensor,
+    dataset: &'a Dataset,
+    dataset_counter: usize,
+    dataset_len: i64,
+    curr_epoch: i32,
+    optimizer: &'a mut dyn Optimizer,
+    c_module: &'a TrainableCModule,
+}
+
+impl<'a> TrainModule<'a> {
+    fn new(
+        c_module: &'a TrainableCModule,
+        optimizer: Box<dyn Optimizer + 'a>,
+        epochs: i32,
+        dataset: &'a Dataset,
+    ) -> Self {
+        Self {
+            c_module,
+            optimizer,
+            epochs,
+            curr_epoch: 0,
+            dataset,
+            dataset_counter: 0,
+            dataset_len: dataset.samples.lock().unwrap().size()[0],
+        }
+    }
+
+    fn iter(&mut self) -> TrainModuleIter {
+        TrainModuleIter {
+            epochs: self.epochs,
+            dataset_counter: self.dataset_counter,
+            loss: Tensor::new(),
+            dataset: self.dataset,
+            dataset_len: self.dataset.samples.lock().unwrap().size()[0],
+            curr_epoch: 0,
+            pos: 0,
+            c_module: self.c_module,
+            optimizer: &mut *self.optimizer,
+        }
+    }
+}
+
+impl<'a> Iterator for TrainModuleIter<'a> {
+    type Item = (i32, i32, Tensor);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (input, label) = self.dataset.iter().nth(self.dataset_counter).unwrap();
+        let input = input.f_view([1, 1]).unwrap();
+        let output = self.c_module.forward_ts(&[input]).unwrap();
+        let loss = l2_loss(&output, &label).unwrap();
+        self.optimizer.zero_grad().unwrap();
+        loss.backward();
+        self.optimizer.step().unwrap();
+
+        let total_rounds = self.epochs * self.dataset_len as i32;
+
+        if (self.curr_epoch * self.epochs) < (total_rounds - 1) {
+            let res = (self.curr_epoch, self.dataset_counter as i32, loss);
+            if self.dataset_counter < (self.dataset_len - 1) as usize {
+                self.dataset_counter += 1
+            } else {
+                self.dataset_counter = 0;
+                self.curr_epoch += 1;
+            };
+            Some(res)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Module {
     c_module: TrainableCModule,
@@ -68,29 +152,34 @@ impl Module {
         vs.copy(&self.var_store)?;
         Ok(Parameters::from(vs))
     }
-    pub fn private_parameters(&self, max_grad_norm: f64, noise_multiplier: f64, loss_type: LossType) -> Result<PrivateParameters, TchError> {
+    pub fn private_parameters(
+        &self,
+        max_grad_norm: f64,
+        noise_multiplier: f64,
+        loss_type: LossType,
+    ) -> Result<PrivateParameters, TchError> {
         let mut vs = VarStore::new(self.var_store.device());
         vs.copy(&self.var_store)?;
-        Ok(PrivateParameters::new(vs, max_grad_norm, noise_multiplier, loss_type))
+        Ok(PrivateParameters::new(
+            vs,
+            max_grad_norm,
+            noise_multiplier,
+            loss_type,
+        ))
     }
     pub fn train(&self, dataset: &Dataset, config: TrainConfig) -> Result<(), TchError> {
-        let mut optimizer = if config.private_learning {
+        let optimizer = if config.private_learning {
             let parameters = self.private_parameters(1.0, 0.01, private_learning::LossType::Sum)?;
             Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer>
         } else {
             let parameters = self.parameters()?;
             Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer>
         };
-        for _ in 0..config.epochs {
-            for (input, label) in dataset.iter() {
-                let input = input.f_view([1, 1])?;
-                let output = self.c_module.forward_ts(&[input])?;
-                let loss = l2_loss(&output, &label)?;
-                optimizer.zero_grad()?;
-                loss.backward();
-                optimizer.step()?;
-            }
+        let mut trainer = TrainModule::new(&self.c_module, optimizer, config.epochs, dataset);
+        for (epoch, pos, loss) in trainer.iter() {
+            println!("{}, {}, {:?}", epoch, pos, loss);
         }
+
         Ok(())
     }
     pub fn test(&self, dataset: &Dataset, config: TestConfig) -> Result<f32, TchError> {
@@ -166,7 +255,11 @@ impl<'a> Iterator for DatasetIter<'a> {
 
 impl Dataset {
     pub fn iter(&self) -> DatasetIter<'_> {
-        DatasetIter { dataset: &self, index: 0, len: self.samples.lock().unwrap().size()[0] }
+        DatasetIter {
+            dataset: &self,
+            index: 0,
+            len: self.samples.lock().unwrap().size()[0],
+        }
     }
 }
 
@@ -174,16 +267,25 @@ impl TryFrom<SizedObjectsBytes> for Dataset {
     type Error = TchError;
 
     fn try_from(value: SizedObjectsBytes) -> Result<Self, Self::Error> {
-        let dataset = Dataset { samples: Mutex::new(Tensor::of_slice::<f32>(&[])), labels: Mutex::new(Tensor::of_slice::<f32>(&[])) };
+        let dataset = Dataset {
+            samples: Mutex::new(Tensor::of_slice::<f32>(&[])),
+            labels: Mutex::new(Tensor::of_slice::<f32>(&[])),
+        };
         for object in value {
-            let data = Tensor::load_multi_from_stream_with_device(Cursor::new(object), Device::Cpu)?;
+            let data =
+                Tensor::load_multi_from_stream_with_device(Cursor::new(object), Device::Cpu)?;
             for (name, tensor) in data {
                 let mut samples = dataset.samples.lock().unwrap();
                 let mut labels = dataset.labels.lock().unwrap();
                 match &*name {
                     "samples" => *samples = Tensor::f_cat(&[&*samples, &tensor], 0)?,
                     "labels" => *labels = Tensor::f_cat(&[&*labels, &tensor], 0)?,
-                    s => return Err(TchError::FileFormat(String::from(format!("Invalid data, unknown field {}.", s)))),
+                    s => {
+                        return Err(TchError::FileFormat(String::from(format!(
+                            "Invalid data, unknown field {}.",
+                            s
+                        ))))
+                    }
                 };
             }
         }
@@ -197,7 +299,13 @@ impl TryFrom<&Dataset> for SizedObjectsBytes {
     fn try_from(value: &Dataset) -> Result<Self, Self::Error> {
         let mut dataset_bytes = SizedObjectsBytes::new();
         let mut buf = Vec::new();
-        Tensor::save_multi_to_stream(&[("samples", &*value.samples.lock().unwrap()), ("labels", &*value.labels.lock().unwrap())], &mut buf)?;
+        Tensor::save_multi_to_stream(
+            &[
+                ("samples", &*value.samples.lock().unwrap()),
+                ("labels", &*value.labels.lock().unwrap()),
+            ],
+            &mut buf,
+        )?;
         dataset_bytes.append_back(buf);
 
         Ok(dataset_bytes)
