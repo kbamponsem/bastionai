@@ -2,6 +2,7 @@ use private_learning::{l2_loss, Optimizer, SGD};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
+use storage::TrainModuleIter;
 use tch::vision::dataset;
 use tch::Tensor;
 use tokio::sync::mpsc;
@@ -156,16 +157,35 @@ impl RemoteTorch for BastionAIServer {
             .ok_or(Status::not_found("Not found"))
             .unwrap();
 
-        {
-            let trainer = module.data.train(Arc::new(dataset.data), config);
-            module.data.train(Arc::new(dataset.data), config);
-            tokio::spawn(async move {
-                for (e, p, l) in trainer {
-                    println!("{}, {}, {:?}", e, p, l);
-                    tx.send(Ok(TrainingProgress::default())).await.unwrap();
-                }
-            });
+        let optimizer = if config.private_learning {
+            let parameters = module
+                .data
+                .private_parameters(1.0, 0.01, private_learning::LossType::Sum)
+                .unwrap();
+            Box::new(SGD::new(parameters, config.learning_rate as f64))
+                as Box<dyn Optimizer + Send + Sync>
+        } else {
+            let parameters = module.data.parameters().unwrap();
+            Box::new(SGD::new(parameters, config.learning_rate as f64))
+                as Box<dyn Optimizer + Send + Sync>
         };
+        let trainer = TrainModuleIter {
+            c_module: Arc::new(module.data.get_module()),
+            epochs: config.epochs,
+            curr_epoch: 0,
+            pos: 0,
+            dataset: &dataset.data,
+            dataset_counter: 0,
+            dataset_len: dataset.data.get_samples().lock().unwrap().size()[0],
+            loss: Tensor::new(),
+            optimizer,
+        };
+        tokio::spawn(async move {
+            for (e, p, l) in trainer {
+                println!("{}, {}, {:?}", e, p, l);
+                tx.send(Ok(TrainingProgress::default())).await.unwrap();
+            }
+        });
 
         // unimplemented!()
         Ok(Response::new(ReceiverStream::new(rx)))

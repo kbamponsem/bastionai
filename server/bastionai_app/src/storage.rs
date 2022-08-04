@@ -72,19 +72,19 @@ impl Iterator for SizedObjectsBytes {
 //     dataset_len: i64,
 // }
 
-pub struct TrainModuleIter<'a> {
+pub struct TrainModuleIter {
     epochs: i32,
     pos: i32,
     loss: Tensor,
-    dataset: &'a Dataset,
+    dataset: &'static Dataset,
     dataset_counter: usize,
     dataset_len: i64,
     curr_epoch: i32,
-    optimizer: Box<dyn Optimizer + Send>,
+    optimizer: Box<dyn Optimizer + Send + Sync>,
     c_module: Arc<TrainableCModule>,
 }
 
-impl<'a> Iterator for TrainModuleIter<'a> {
+impl Iterator for TrainModuleIter {
     type Item = (i32, i32, Tensor);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -140,31 +140,37 @@ impl Module {
             loss_type,
         ))
     }
-    pub fn train(&self, dataset: Arc<Dataset>, config: TrainConfig) -> TrainModuleIter {
-        let optimizer = if config.private_learning {
-            let parameters = self
-                .private_parameters(1.0, 0.01, private_learning::LossType::Sum)
-                .unwrap();
-            Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer + Send>
-        } else {
-            let parameters = self.parameters().unwrap();
-            Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer + Send>
-        };
 
-        let trainer = TrainModuleIter {
-            c_module: Arc::new(self.c_module),
-            epochs: config.epochs,
-            curr_epoch: 0,
-            pos: 0,
-            dataset: dataset.as_ref(),
-            dataset_counter: 0,
-            dataset_len: dataset.samples.lock().unwrap().size()[0],
-            loss: Tensor::new(),
-            optimizer,
-        };
-
-        trainer
+    pub fn get_module(&self) -> TrainableCModule {
+        self.c_module
     }
+    // pub fn train(&self, dataset: Arc<Dataset>, config: TrainConfig) -> TrainModuleIter {
+    //     let optimizer = if config.private_learning {
+    //         let parameters = self
+    //             .private_parameters(1.0, 0.01, private_learning::LossType::Sum)
+    //             .unwrap();
+    //         Box::new(SGD::new(parameters, config.learning_rate as f64))
+    //             as Box<dyn Optimizer + Send + Sync>
+    //     } else {
+    //         let parameters = self.parameters().unwrap();
+    //         Box::new(SGD::new(parameters, config.learning_rate as f64))
+    //             as Box<dyn Optimizer + Send + Sync>
+    //     };
+
+    //     let trainer = TrainModuleIter {
+    //         c_module: Arc::new(self.c_module),
+    //         epochs: config.epochs,
+    //         curr_epoch: 0,
+    //         pos: 0,
+    //         dataset: dataset.as_ref(),
+    //         dataset_counter: 0,
+    //         dataset_len: dataset.samples.lock().unwrap().size()[0],
+    //         loss: Tensor::new(),
+    //         optimizer,
+    //     };
+
+    //     trainer
+    // }
 
     pub fn test(&self, dataset: &Dataset, config: TestConfig) -> Result<f32, TchError> {
         let mut count = 0;
@@ -244,6 +250,10 @@ impl Dataset {
             index: 0,
             len: self.samples.lock().unwrap().size()[0],
         }
+    }
+
+    pub fn get_samples(&self) -> Mutex<Tensor> {
+        self.samples
     }
 }
 
