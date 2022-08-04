@@ -1,13 +1,19 @@
-use crate::remote_torch::{TestConfig, TrainConfig};
+use crate::remote_torch::{TestConfig, TrainConfig, TrainingProgress};
 use crate::utils::*;
 use private_learning::{l2_loss, LossType, Optimizer, Parameters, PrivateParameters, SGD};
 use ring::hmac;
 use std::collections::{HashMap, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::io::Cursor;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use tch::nn::VarStore;
+use tch::vision::dataset;
 use tch::{CModule, Device, IValue, IndexOp, TchError, Tensor, TrainableCModule};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Response, Status};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct SizedObjectsBytes(Vec<u8>);
@@ -56,15 +62,15 @@ impl Iterator for SizedObjectsBytes {
     }
 }
 
-pub struct TrainModule<'a> {
-    c_module: &'a TrainableCModule,
-    optimizer: Box<dyn Optimizer + 'a>,
-    epochs: i32,
-    curr_epoch: i32,
-    dataset_counter: usize,
-    dataset: &'a Dataset,
-    dataset_len: i64,
-}
+// pub struct TrainModule<'a> {
+//     c_module: &'a TrainableCModule,
+//     optimizer: Box<dyn Optimizer + Send>,
+//     epochs: i32,
+//     curr_epoch: i32,
+//     dataset_counter: usize,
+//     dataset_id: Uuid,
+//     dataset_len: i64,
+// }
 
 pub struct TrainModuleIter<'a> {
     epochs: i32,
@@ -74,41 +80,8 @@ pub struct TrainModuleIter<'a> {
     dataset_counter: usize,
     dataset_len: i64,
     curr_epoch: i32,
-    optimizer: &'a mut dyn Optimizer,
-    c_module: &'a TrainableCModule,
-}
-
-impl<'a> TrainModule<'a> {
-    pub fn new(
-        c_module: &'a TrainableCModule,
-        optimizer: Box<dyn Optimizer + 'a>,
-        epochs: i32,
-        dataset: &'a Dataset,
-    ) -> Self {
-        Self {
-            c_module,
-            optimizer,
-            epochs,
-            curr_epoch: 0,
-            dataset,
-            dataset_counter: 0,
-            dataset_len: dataset.samples.lock().unwrap().size()[0],
-        }
-    }
-
-    pub fn iter(&mut self) -> TrainModuleIter {
-        TrainModuleIter {
-            epochs: self.epochs,
-            dataset_counter: self.dataset_counter,
-            loss: Tensor::new(),
-            dataset: self.dataset,
-            dataset_len: self.dataset.samples.lock().unwrap().size()[0],
-            curr_epoch: 0,
-            pos: 0,
-            c_module: self.c_module,
-            optimizer: &mut *self.optimizer,
-        }
-    }
+    optimizer: Box<dyn Optimizer + Send>,
+    c_module: Arc<TrainableCModule>,
 }
 
 impl<'a> Iterator for TrainModuleIter<'a> {
@@ -167,22 +140,32 @@ impl Module {
             loss_type,
         ))
     }
-    pub fn train<'a>(
-        &'a self,
-        dataset: &'a Dataset,
-        config: TrainConfig,
-    ) -> Result<Box<TrainModule>, TchError> {
+    pub fn train(&self, dataset: Arc<Dataset>, config: TrainConfig) -> TrainModuleIter {
         let optimizer = if config.private_learning {
-            let parameters = self.private_parameters(1.0, 0.01, private_learning::LossType::Sum)?;
-            Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer>
+            let parameters = self
+                .private_parameters(1.0, 0.01, private_learning::LossType::Sum)
+                .unwrap();
+            Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer + Send>
         } else {
-            let parameters = self.parameters()?;
-            Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer>
+            let parameters = self.parameters().unwrap();
+            Box::new(SGD::new(parameters, config.learning_rate as f64)) as Box<dyn Optimizer + Send>
         };
-        let trainer = TrainModule::new(&self.c_module, optimizer, config.epochs, dataset);
 
-        Ok(Box::new(trainer))
+        let trainer = TrainModuleIter {
+            c_module: Arc::new(self.c_module),
+            epochs: config.epochs,
+            curr_epoch: 0,
+            pos: 0,
+            dataset: dataset.as_ref(),
+            dataset_counter: 0,
+            dataset_len: dataset.samples.lock().unwrap().size()[0],
+            loss: Tensor::new(),
+            optimizer,
+        };
+
+        trainer
     }
+
     pub fn test(&self, dataset: &Dataset, config: TestConfig) -> Result<f32, TchError> {
         let mut count = 0;
         let mut correct = 0;

@@ -1,6 +1,7 @@
 use super::Chunk;
 use crate::storage::{Artifact, SizedObjectsBytes};
 use crate::Reference;
+use std::sync::Arc;
 use tch::{TchError, Tensor};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -66,12 +67,9 @@ pub async fn stream_data(
     Response::new(ReceiverStream::new(rx))
 }
 
-pub fn serialize_tensor(tensor: &Tensor) -> Vec<u8> {
+pub fn serialize_tensor(tensor: Arc<Tensor>) -> Vec<u8> {
     let buf = Vec::new();
     tensor.save_to_stream(buf.clone()).unwrap();
-    // let capacity = tensor.numel() * tensor.f_kind().unwrap().elt_size_in_bytes();
-    // let mut bytes = vec![0; capacity];
-    // tensor.copy_data_u8(&mut bytes, tensor.numel());
     buf.clone()
 }
 

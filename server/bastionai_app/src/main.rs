@@ -1,5 +1,6 @@
 use private_learning::{l2_loss, Optimizer, SGD};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::RwLock;
 use tch::vision::dataset;
 use tch::Tensor;
@@ -142,26 +143,30 @@ impl RemoteTorch for BastionAIServer {
                 .clone()
                 .ok_or(Status::invalid_argument("Not found"))?,
         )?;
-        let (mut tx, rx) = mpsc::channel(5);
-        {
-            let datasets = self.datasets.read().unwrap();
-            let modules = self.modules.read().unwrap();
-            let dataset = datasets
-                .get(&dataset_id)
-                .ok_or(Status::not_found("Not found"))?;
-            let module = modules
-                .get(&module_id)
-                .ok_or(Status::not_found("Not found"))?;
 
-            let trainer = tcherror_to_status(module.data.train(&dataset.data, config))?;
-            let trainer = Box::leak(trainer);
+        let (tx, rx) = mpsc::channel(5);
+        let datasets = self.datasets.read().unwrap();
+        let modules = self.modules.read().unwrap();
+        let dataset = datasets
+            .get(&dataset_id)
+            .ok_or(Status::not_found("Not found"))
+            .unwrap();
+        let module = modules
+            .get(&module_id)
+            .ok_or(Status::not_found("Not found"))
+            .unwrap();
+
+        {
+            let trainer = module.data.train(Arc::new(dataset.data), config);
+            module.data.train(Arc::new(dataset.data), config);
             tokio::spawn(async move {
-                for it in trainer.iter() {
-                    let (epoch, pos, loss) = it;
+                for (e, p, l) in trainer {
+                    println!("{}, {}, {:?}", e, p, l);
+                    tx.send(Ok(TrainingProgress::default())).await.unwrap();
                 }
-                tx.send(Ok(TrainingProgress::default())).await.unwrap();
             });
-        }
+        };
+
         // unimplemented!()
         Ok(Response::new(ReceiverStream::new(rx)))
     }
