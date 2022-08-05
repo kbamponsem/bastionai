@@ -1,7 +1,7 @@
 use private_learning::{l2_loss, Optimizer, SGD};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::thread;
+use std::{thread, time::Duration};
 use storage::TrainModuleIter;
 use tch::vision::dataset;
 use tch::Tensor;
@@ -168,16 +168,15 @@ impl RemoteTorch for BastionAIServer {
             Box::new(SGD::new(parameters, config.learning_rate as f64))
                 as Box<dyn Optimizer + Send + Sync>
         };
-        let mut trainer = module.data.train(&dataset.data, config);
-        let (tx, rx) = mpsc::channel(50);
+        let channel_size = (config.epochs.clone() * dataset.data.get_size()) as usize;
+        let trainer = module.data.train(&dataset.data, config.clone());
+        let (tx, rx) = mpsc::channel(channel_size);
+
         tokio_scoped::scope(|s| {
             s.spawn(async move {
-                for it in trainer {
-                    // let loss = serialize_tensor(Arc::new(loss));
-                    // println!("{}, {}, {:?}", epoch, position, loss);
-                    println!("{:?}", it);
-                    let (epoch, position, loss) = it;
-                    let loss = serialize_tensor(Arc::new(loss));
+                for (epoch, position, loss) in trainer {
+                    let loss = serialize_tensor(&loss);
+                    println!("{}, {}, {:?}", epoch, position, loss);
                     tx.send(Ok(TrainingProgress {
                         epoch,
                         position,

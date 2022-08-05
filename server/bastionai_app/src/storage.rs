@@ -76,22 +76,18 @@ impl<'a> Iterator for TrainModuleIter<'a> {
     type Item = (i32, i32, Tensor);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (input, label) = self.dataset.iter().nth(self.dataset_counter).unwrap();
-        let input = input.f_view([1, 1]).unwrap();
-        let output = self.c_module.forward_ts(&[input]).unwrap();
-        let loss = l2_loss(&output, &label).unwrap();
-        self.optimizer.zero_grad().unwrap();
-        loss.backward();
-        self.optimizer.step().unwrap();
-
-        println!(
-            "{}, {}, {}, {}",
-            self.curr_epoch, self.dataset_counter, self.epochs, self.dataset_len
-        );
         if self.curr_epoch < self.epochs {
+            let (input, label) = self.dataset.iter().nth(self.dataset_counter).unwrap();
+            let input = input.f_view([1, 1]).unwrap();
+            let output = self.c_module.forward_ts(&[input]).unwrap();
+            let loss = l2_loss(&output, &label).unwrap();
+            self.optimizer.zero_grad().unwrap();
+            loss.backward();
+            self.optimizer.step().unwrap();
+
             let res = (self.curr_epoch, self.dataset_counter as i32, loss);
-            if self.dataset_counter < self.dataset_len as usize {
-                self.dataset_counter += 1
+            if self.dataset_counter < (self.dataset_len - 1) as usize {
+                self.dataset_counter += 1;
             } else {
                 self.dataset_counter = 0;
                 self.curr_epoch += 1;
@@ -235,6 +231,10 @@ impl Dataset {
             index: 0,
             len: self.samples.lock().unwrap().size()[0],
         }
+    }
+
+    pub fn get_size(&self) -> i32 {
+        self.samples.lock().unwrap().size()[0] as i32
     }
 }
 
