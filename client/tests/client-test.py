@@ -54,7 +54,7 @@ with Connection("localhost", 50051) as client:
         model=model_ref,
         dataset=dataset_ref,
         batch_size=2,
-        epochs=1,
+        epochs=2,
         learning_rate=1e-1
     ))
 

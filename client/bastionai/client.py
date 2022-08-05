@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from typing import Any, Iterator, List
+from typing import Any, Iterable, Iterator, List
 
 import grpc
+from tqdm import tqdm
 from pb.remote_torch_pb2 import (Chunk, Empty, Reference, TestConfig,
-                                 TrainConfig)
+                                 TrainConfig, TrainingProgress)
 from pb.remote_torch_pb2_grpc import RemoteTorchStub
 from torch import Tensor
 from torch.nn import Module
@@ -37,7 +38,9 @@ class Client:
         return self.stub.AvailableDatasets(Empty())
 
     def train(self, config: TrainConfig) -> None:
-        self.stub.Train(config)
+        progress = self.stub.Train(config)
+        # for i in progress:
+        #     print("###")
 
     def test(self, config: TestConfig) -> float:
         return self.stub.Test(config)

@@ -54,10 +54,10 @@ class RemoteTorchStub(object):
                 request_serializer=remote__torch__pb2.Empty.SerializeToString,
                 response_deserializer=remote__torch__pb2.References.FromString,
                 )
-        self.Train = channel.unary_unary(
+        self.Train = channel.unary_stream(
                 '/remote_torch.RemoteTorch/Train',
                 request_serializer=remote__torch__pb2.TrainConfig.SerializeToString,
-                response_deserializer=remote__torch__pb2.Empty.FromString,
+                response_deserializer=remote__torch__pb2.TrainingProgress.FromString,
                 )
         self.Test = channel.unary_unary(
                 '/remote_torch.RemoteTorch/Test',
@@ -172,10 +172,10 @@ def add_RemoteTorchServicer_to_server(servicer, server):
                     request_deserializer=remote__torch__pb2.Empty.FromString,
                     response_serializer=remote__torch__pb2.References.SerializeToString,
             ),
-            'Train': grpc.unary_unary_rpc_method_handler(
+            'Train': grpc.unary_stream_rpc_method_handler(
                     servicer.Train,
                     request_deserializer=remote__torch__pb2.TrainConfig.FromString,
-                    response_serializer=remote__torch__pb2.Empty.SerializeToString,
+                    response_serializer=remote__torch__pb2.TrainingProgress.SerializeToString,
             ),
             'Test': grpc.unary_unary_rpc_method_handler(
                     servicer.Test,
@@ -339,9 +339,9 @@ class RemoteTorch(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(request, target, '/remote_torch.RemoteTorch/Train',
+        return grpc.experimental.unary_stream(request, target, '/remote_torch.RemoteTorch/Train',
             remote__torch__pb2.TrainConfig.SerializeToString,
-            remote__torch__pb2.Empty.FromString,
+            remote__torch__pb2.TrainingProgress.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
 
