@@ -9,7 +9,7 @@ build:
     python: "3.9"
   jobs:
     post_install:
-    - bash docs/generate_api_reference.sh
+    - bash docs/generate_api_references.sh
 
 mkdocs:
   configuration: mkdocs.yml
